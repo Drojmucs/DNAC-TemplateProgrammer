@@ -16,7 +16,15 @@ def show_templates():
     #for project in result:
     #    print( '{0}/{1}'.format(project['projectName'], project['name']))
 
-
+def get_device_ids():
+    result = get_url("dna/intent/api/v1/network-device")
+    if result:
+        hostname2id = {}
+        for dev in result.get("response"):
+            hostname = str(dev.get("hostname"))
+            hostname_strip = hostname.replace(".cisco.com","")
+            hostname2id[hostname_strip] = dev.get("id")
+    return hostname2id
 
 def get_template_id(fqtn):
     '''
@@ -43,42 +51,13 @@ def get_template_id(fqtn):
                     id = v['id']
     return id,max
 
-def check_implicit(reqparams, device, params):
-    # TODO:  This just looks for __device and __interface and adds the managed deviceIP to the resourceParms attribute to resolve implict vars
-    # Need to extend this to handle the other use cases
-    #       "type" : "SITE_UUID",   __sitetag
-    #        "type": "MANAGED_AP_LOCATIONS", 
-    #        "type": "SECONDARY_MANAGED_AP_LOCATIONS",
-    #        "type": "POLICY_PROFILES"  __policyprofile
-    # need to get these from the values passed in as params and translate them.  They are a comma sepperated list
-    # 
-    return_resource = False
-    try:
-        req_dict = json.loads(reqparams)
-    except json.decoder.JSONDecodeError as e:
-        sys.exit(f"Invalid params {e.message}")
-
-    for params in req_dict.keys():
-        print(params)
-        if "__device" in params or "__interface" in params:
-            return_resource = True
-            
-    if return_resource == True:
-        resourceParams =  [
-          {
-            "type": "MANAGED_DEVICE_IP",
-            "value": device
-          }
-          ]
-        return resourceParams
-
-    return None
-
 def execute(id, reqparams, bindings, device, params, doForce):
-    #parts = deviceParams.split(';')
-    #device = parts[0]
-
-    #params = json.loads(parts[1])
+    hostname_id_dict = get_device_ids()
+    if ".cisco.com" in device:
+        device_hostname = device.replace(".cisco.com","")
+    else:
+        device_hostname = device
+    device_id = hostname_id_dict.get(device_hostname)
     print ("\nExecuting template on:{0}, with Params:{1}".format(device,params))
 
     # need to check device params to make sure all present
@@ -88,17 +67,12 @@ def execute(id, reqparams, bindings, device, params, doForce):
     "targetInfo": [
      {
 
-        "id": device,
-        "type": "MANAGED_DEVICE_IP",
+        "id": device_id,
+        "type": "MANAGED_DEVICE_UUID",
         "params": json.loads(params)
         }
      ]
     }
-
-    # this is for implicit variables, needs to be generalised
-    resource_params = check_implicit(reqparams, device, params)
-    if resource_params is not None:
-        payload['targetInfo'][0]['resourceParams']= resource_params
     print ("payload", json.dumps(payload))
     return deploy_and_wait("dna/intent/api/v1/template-programmer/template/deploy", payload)
 
@@ -118,13 +92,17 @@ def preview_template(id, params):
 
 def bulk(id, reqparams, bindings, bulkfile, doForce):
     targets = []
+    hostname_id_dict = get_device_ids()
     with open(bulkfile, "rt") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            device_ip = row.pop('device_ip')
+            device_hostname = row.pop('device_hostname')
+            if ".cisco.com" in device_hostname:
+                device_hostname = device_hostname.replace(".cisco.com","")
+            device_id = hostname_id_dict.get(device_hostname)
             params = dict(row)
-            targets.append ({"id": device_ip, "type": "MANAGED_DEVICE_IP","params": params})
-            print("\nExecuting template on:{0}, with Params:{1}".format(device_ip, params))
+            targets.append ({"id": device_id, "type": "MANAGED_DEVICE_UUID","params": params})
+            print("\nExecuting template on:{0}, with Params:{1}".format(device_hostname, params))
 
     # need to check device params to make sure all present
     payload = {
@@ -132,8 +110,6 @@ def bulk(id, reqparams, bindings, bulkfile, doForce):
     "forcePushTemplate" : doForce,
     "targetInfo": targets
     }
-    print ("payload", json.dumps(payload))
-
     return(deploy_and_wait("dna/intent/api/v1/template-programmer/template/deploy", payload))
 
 def paramsfiletojson (paramsfile):
@@ -143,10 +119,10 @@ def paramsfiletojson (paramsfile):
     with open(paramsfile, "rt") as f:
         reader = csv.reader(f)
         headers = [header.strip() for header in next(f).split(",")]
-        
+
         for line in f:
             values = [value.strip() for value in line.split(",")]
-            
+
             for (header,value) in zip(headers,values):
                 if (header not in params):
                     params[header] = [value]
@@ -241,10 +217,10 @@ if __name__ == "__main__":
                         help="json file containing params")
     parser.add_argument('--bulkfile', type=str, required=False,
                         help="csv file containing devices + params")
-
     parser.add_argument('-v', action='store_true',
                         help="verbose")
     args = parser.parse_args()
+
     if args.v:
         logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -259,7 +235,7 @@ if __name__ == "__main__":
         params, bindings = print_template(template)
         if args.update:
             update_template(template, args.template, args.update)
-        
+
         if args.device:
             if args.paramsfile:
                 if args.paramsfile.endswith('.json'):
@@ -285,4 +261,3 @@ if __name__ == "__main__":
             parse_response(response)
     else:
         show_templates()
-
