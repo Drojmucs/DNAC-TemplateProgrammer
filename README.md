@@ -177,7 +177,7 @@ wireless tag site ST_{{SITE}}
 J2 template above accepts two lists of variables, and creates a nested set of configlets for each row of values in the supplied '.csv' or '.json' paramsfile
 
 ```buildconfig
-./template.py --template WLC9800-DayN-Provisioning/Guest-Wireless-Tag-Profile --device 10.85.54.99 --preview --force --paramsfile 'work_files/paramsfile.csv'
+./template.py --template WLC9800-DayN-Provisioning/Guest-Wireless-Tag-Profile --device <deviceHostname> --preview --force --paramsfile 'work_files/paramsfile.csv'
 ```
 
 or
