@@ -8,6 +8,9 @@ from argparse import ArgumentParser
 import csv
 from util import DeploymentError
 from util import get_url, deploy_and_wait, put_and_wait, post_and_wait, put
+import concurrent.futures
+
+hostname2id_extended = {}
 
 def show_templates():
     print("Available Templates:")
@@ -16,15 +19,28 @@ def show_templates():
     #for project in result:
     #    print( '{0}/{1}'.format(project['projectName'], project['name']))
 
-def get_device_ids():
-    result = get_url("dna/intent/api/v1/network-device")
+def get_device_ids_api_thread(offset,limit):
+    result = get_url("dna/intent/api/v1/network-device?offset={}&limit={}".format(offset,limit))
     if result:
-        hostname2id = {}
         for dev in result.get("response"):
             hostname = str(dev.get("hostname"))
             hostname_strip = hostname.replace(".cisco.com","")
-            hostname2id[hostname_strip] = dev.get("id")
-    return hostname2id
+            hostname2id_extended[hostname_strip] = dev.get("id")
+
+def get_device_ids():
+    print("\nCollecting Inventory Device Data for ID to Hostname Mapping... Please Wait\n")
+    device_count = get_url("dna/intent/api/v1/network-device/count").get("response")
+    thread_names = []
+    limit = 500
+    offset = 1
+    for chunk in range(1,device_count,limit):
+        chunk+=1
+        thread_names.append("{}{}".format("Thread_",chunk))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        for iii in thread_names:
+            executor.submit(get_device_ids_api_thread, offset, limit)
+            offset+=limit
+    return hostname2id_extended
 
 def get_template_id(fqtn):
     '''
@@ -69,7 +85,14 @@ def execute(id, reqparams, bindings, device, params, doForce):
 
         "id": device_id,
         "type": "MANAGED_DEVICE_UUID",
-        "params": json.loads(params)
+        "params": json.loads(params),
+        "resourceParams": [
+                {
+                  "type": "MANAGED_DEVICE_UUID",
+                  "scope": "RUNTIME",
+                  "value": device_id
+                }
+            ]
         }
      ]
     }
@@ -99,10 +122,19 @@ def bulk(id, reqparams, bindings, bulkfile, doForce):
             device_hostname = row.pop('device_hostname')
             if ".cisco.com" in device_hostname:
                 device_hostname = device_hostname.replace(".cisco.com","")
-            device_id = hostname_id_dict.get(device_hostname)
-            params = dict(row)
-            targets.append ({"id": device_id, "type": "MANAGED_DEVICE_UUID","params": params})
-            print("\nExecuting template on:{0}, with Params:{1}".format(device_hostname, params))
+
+            if device_hostname in hostname_id_dict.keys():
+                device_id = hostname_id_dict.get(device_hostname)
+                params = dict(row)
+                resourceParams = [{
+                  "type": "MANAGED_DEVICE_UUID",
+                  "scope": "RUNTIME",
+                  "value": device_id
+                  }]
+                targets.append ({"id": device_id, "type": "MANAGED_DEVICE_UUID","params": params, "resourceParams": resourceParams})
+                print("\nExecuting template on:{0}, with Params:{1}".format(device_hostname, params))
+            else:
+                print("Did not find hostname in Inventory")
 
     # need to check device params to make sure all present
     payload = {
@@ -110,6 +142,7 @@ def bulk(id, reqparams, bindings, bulkfile, doForce):
     "forcePushTemplate" : doForce,
     "targetInfo": targets
     }
+    print(payload)
     return(deploy_and_wait("dna/intent/api/v1/template-programmer/template/deploy", payload))
 
 def paramsfiletojson (paramsfile):
@@ -219,6 +252,7 @@ if __name__ == "__main__":
                         help="csv file containing devices + params")
     parser.add_argument('-v', action='store_true',
                         help="verbose")
+    parser.add_argument('-t', type=str, required=False)
     args = parser.parse_args()
 
     if args.v:
